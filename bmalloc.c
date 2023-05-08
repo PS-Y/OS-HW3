@@ -191,6 +191,7 @@ void *brealloc(void *p, size_t s)
 /*
 	bestfit, firstfit 사이의 관리 방식을 설정해준다.
 */
+// 메모리 확인
 void bmconfig(bm_option opt)
 {
 	// TODO
