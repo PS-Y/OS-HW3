@@ -8,46 +8,52 @@
 
 #define BLOCK_SIZE 12
 #define MIN_BLOCK_SIZE 4 // 분할할 블록의 최소 크기
+#define HEADER_SIZE 9
 
 bm_option bm_mode = BestFit;
-bm_header_ptr bm_list_head = {0, 0, 0x0};
-bm_header_ptr free_list[10]; // 각각의 크기에 맞는 블록 리스트
+bm_header_ptr bm_list_head = NULL;
 
-bm_header_ptr buddy_heap_start = NULL;
-void *buddy_heap = NULL;
+#if 1
+#define DPRINT(func) func;
+#else
+#define DPRINT(func)
+#endif
 
-void init_buddy_heap()
+void *init_buddy_heap()
 {
-	buddy_heap = mmap(NULL, pow(2, BLOCK_SIZE), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	if (buddy_heap == MAP_FAILED)
+
+	bm_header_ptr block = mmap(NULL, pow(2, BLOCK_SIZE), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+	if (block == MAP_FAILED)
 	{
 		perror("mmap failed");
 		exit(1);
 	}
-	bm_list_head = (bm_header_ptr)buddy_heap;
-	bm_list_head->used = 0;
-	bm_list_head->size = BLOCK_SIZE;
-	bm_list_head->next = NULL;
+	block->used = 0;
+	block->size = BLOCK_SIZE;
+	block->next = NULL;
+
+	return block;
 }
 
 /*
 	head의 예상 sibling header 주소를 return한다.
 	h와 형제의 블록 크기가 다를 경우 sibling(h)가 h의 형제가 아닐 수 있습니다.
 */
-void *sibling(bm_header *h)
-{
-	// TODO
-	// 주어진 블록의 형제 블록 주소를 반환
-	int block_size = 1 << h->size;
-	bm_header *parent = (bm_header *)((char *)h - block_size);
-	int parent_size = h->size + 1;
-	int parent_level = parent_size - 1;
-	int parent_block_size = 1 << parent_size;
-	int parent_index = ((char *)parent - (char *)free_list) / parent_block_size;
-	int sibling_index = (parent_index % 2 == 0) ? (parent_index + 1) : (parent_index - 1);
-	bm_header *sibling = (bm_header *)((char *)free_list + sibling_index * parent_block_size);
-	return (void *)sibling;
-}
+// void *sibling(void *h)
+// {
+// 	// TODO
+// 	// 주어진 블록의 형제 블록 주소를 반환
+// 	int block_size = 1 << h->size;
+// 	bm_header *parent = (bm_header *)((char *)h - block_size);
+// 	int parent_size = h->size + 1;
+// 	int parent_level = parent_size - 1;
+// 	int parent_block_size = 1 << parent_size;
+// 	int parent_index = ((char *)parent - (char *)free_list) / parent_block_size;
+// 	int sibling_index = (parent_index % 2 == 0) ? (parent_index + 1) : (parent_index - 1);
+// 	bm_header *sibling = (bm_header *)((char *)free_list + sibling_index * parent_block_size);
+// 	return (void *)sibling;
+// }
 /*
 	주어진 크기 s에 맞는 가장 작은 블록의 크기 필드 값을 반환한다.
 */
@@ -65,14 +71,22 @@ int fitting(size_t s)
 // 블록을 반으로 분할하고, 나머지 블록을 반환
 bm_header_ptr split_block(bm_header_ptr block)
 {
-	int block_size = pow(2, block->size);
-	block->size--;
-	bm_header_ptr buddy = (bm_header_ptr)((char *)block + block_size);
-	buddy->size = block->size;
-	buddy->used = 0;
-	buddy->next = free_list[block_size - 1];
-	free_list[block_size - 1] = buddy;
-	return buddy;
+	bm_header_ptr second_next = block->next;
+
+	// Split the block into two half-byte blocks
+	bm_header_ptr first_block = block;
+	bm_header_ptr second_block = (bm_header_ptr)((char *)block + (int)pow(2, block->size - 1));
+
+	// Update the header of the first block
+	first_block->used = 0;
+	first_block->size = block->size - 1;
+	first_block->next = second_block;
+	// Update the header of the second block
+	second_block->used = 0;
+	second_block->size = block->size - 1;
+	second_block->next = second_next;
+
+	return first_block;
 }
 
 /*
@@ -83,111 +97,139 @@ bm_header_ptr split_block(bm_header_ptr block)
 void *bmalloc(size_t s)
 {
 	// TODO
-	if (buddy_heap_start == NULL)
+	if (bm_list_head == NULL)
 	{
-		init_buddy_heap();
-		buddy_heap_start = bm_list_head;
+		// 새로운 4096 블락 생성
+		bm_list_head = init_buddy_heap();
 		// TEST
-		printf("%d, %d, %p\n", buddy_heap_start->used, buddy_heap_start->size, buddy_heap_start->next);
+		DPRINT(printf("%d, %d, %p\n", bm_list_head->used, bm_list_head->size, bm_list_head->next));
 	}
+	// 들어온 s에 fit 한 박스 크기 선언
 	int size = fitting(s);
-	int list_index = size - 1;
-	if (free_list[list_index] == NULL)
+
+	//* DEBUGGING
+	DPRINT(printf("fitted size: %d\n", size));
+
+	// 현재 블럭이 이미 사용중 일 때
+	while (bm_list_head->used == 1)
+	{
+		if (bm_list_head->next != NULL)
+		{
+			DPRINT(printf("현재블럭 사용중:\n현재 %p\n다음 %p\n", bm_list_head, bm_list_head->next));
+			// next에 블럭이 걸려있다면
+			bm_list_head = bm_list_head->next;
+		}
+		else
+		{
+			bm_header_ptr bm_new_block = NULL;
+			bm_new_block = init_buddy_heap();
+			bm_list_head->next = bm_new_block;
+		}
+	}
+	// 여기는 무조건 used = 0
+	// 현재 블락의 크기가 fitting size보다 더 클 경우 -> 블락을 나눠야함.
+	while (bm_list_head->size > size)
 	{
 		// 해당 크기의 블록이 없으면 더 큰 블록에서 분할
-		bm_header_ptr buddy_block = bmalloc(size);
-		if (buddy_block == NULL)
-		{ // 더 큰 블록에서도 사용 가능한 블록이 없는 경우
-			return NULL;
-		}
-		bm_header_ptr split_blk = split_block(buddy_block);
-		split_blk->used = 1;
-		return (void *)(split_blk + 1);
+		bm_list_head = split_block(bm_list_head);
+
+		//* DEBUGGING
+		DPRINT(printf("split size: %d\n", bm_list_head->size));
 	}
-	else
+
+	// 현재 블럭보다 들어온 사이즈가 더 클 때
+	while (bm_list_head->size < size)
 	{
-		// 해당 크기의 블록이 있으면 그 블록을 반환
-		bm_header_ptr block = free_list[list_index];
-		free_list[list_index] = block->next;
-		block->used = 1;
-		return (void *)(block + 1);
+		if (bm_list_head->next != NULL)
+		{
+			DPRINT(printf("현재블럭<입력사이즈: \n현재 %p\n다음 %p\n", bm_list_head, bm_list_head->next));
+			// next에 블럭이 걸려있다면
+			bm_list_head = bm_list_head->next;
+		}
+		else
+		{
+			bm_header_ptr bm_new_block = NULL;
+			bm_new_block = init_buddy_heap();
+			bm_list_head->next = bm_new_block;
+		}
 	}
-}
-// buddy 블록을 반환
-bm_header_ptr get_buddy(bm_header_ptr block)
-{
-	int block_size = pow(2, block->size - 1);
-	return (bm_header_ptr)((char *)block - block_size);
-}
-// 두 블록을 합쳐서 더 큰 블록을 만들고, 그 블록을 반환
-bm_header_ptr merge_blocks(bm_header_ptr block, bm_header_ptr buddy)
-{
-	int block_size = pow(2, block->size);
-	bm_header_ptr merged_block = (bm_header_ptr)((char *)block - block_size);
-	merged_block->size++;
-	merged_block->next = free_list[get_list_index(block_size * 2)];
-	free_list[get_list_index(block_size * 2)] = merged_block;
-	return merged_block;
+	while (bm_list_head->size == size)
+	{
+		// arriving test
+		DPRINT(printf("arrive_start - %d, %d, %p\n", bm_list_head->used, bm_list_head->size, bm_list_head + 9));
+		bm_list_head->used = 1;
+		// arriving test
+		DPRINT(printf("1arrive_end - %d, %d, %p\n", bm_list_head->used, bm_list_head->size, bm_list_head + 9));
+		// payload의 시작주소를 리턴
+		return (void *)bm_list_head + 9;
+	}
+	bm_list_head = bmalloc(s);
 }
 /*
 	사용 중인 블록을 사용하지 않는 상태로 전환 후, 만약 sibling이 모두 사용되고 있지 않다면 merge, merging의 경우는 가능한 경우까지 상위로 계속 반복해야 함. 전체 페이지가 모두 비었다면 페이지를 해제한다.
 */
-void bfree(void *p)
-{
-	// TODO
-	bm_header_ptr block = (bm_header_ptr)p - 1;
-	block->used = 0;
-	while (block->size < 4)
-	{
-		// 최소 크기의 블록까지 합치기
-		bm_header_ptr buddy = get_buddy(block);
-		if (buddy->used == 1)
-		{
-			break;
-		}
-		block = merge_blocks(block, buddy);
-	}
-	block->next = free_list[get_list_index(pow(2, block->size))];
-	free_list[get_list_index(pow(2, block->size))] = block;
-}
+// void bfree(void *p)
+// {
+// 	bm_header_ptr block = (bm_header_ptr)p - 1; // 1?
+// 	// 미사용으로 변경
+// 	block->used = 0;
+
+// 	// Merge with buddy if possible
+// 	while (block_index < NUM_BLOCK_SIZES - 1)
+// 	{
+// 		block_header *buddy = get_buddy(header, block_size);
+// 		if (!buddy->is_free)
+// 		{
+// 			break;
+// 		}
+
+// 		// Remove buddy from the free list
+// 		remove_from_list(buddy);
+
+// 		// Merge with buddy
+// 		header = get_merged_block(header, buddy);
+// 		block_size *= 2;
+// 		block_index++;
+// 	}
+// }
 /*
 	allocate된 메모리 버퍼 크기를 주어진 s 사이즈로 조정한다.
 	이 결과로 데이터는 다른 주소로 이동될 수 있다. perform like realloc().
 */
-void *brealloc(void *p, size_t s)
-{
-	// TODO
-	bm_header_ptr block = (bm_header_ptr)p - 1;
-	int old_size = pow(2, block->size);
-	int new_size = get_block_size(s);
-	if (new_size == old_size)
-	{
-		// 크기가 같으면 그대로 반환
-		return p;
-	}
-	else if (new_size < old_size)
-	{
-		// 블록을 분할해서 크기를 맞춤
-		while (block->size > log2(new_size))
-		{
-			bm_header_ptr buddy = split_block(block);
-			buddy->used = 0;
-		}
-		return p;
-	}
-	else
-	{
-		// 새로운 블록을 할당하고 데이터를 복사한 후 이전 블록 해제
-		void *new_block = bmalloc(s);
-		if (new_block == NULL)
-		{
-			return NULL;
-		}
-		memcpy(new_block, p, old_size);
-		bfree(p);
-		return new_block;
-	}
-}
+// void *brealloc(void *p, size_t s)
+// {
+// 	// TODO
+// 	bm_header_ptr block = (bm_header_ptr)p - 1;
+// 	int old_size = pow(2, block->size);
+// 	int new_size;
+// 	if (new_size == old_size)
+// 	{
+// 		// 크기가 같으면 그대로 반환
+// 		return p;
+// 	}
+// 	else if (new_size < old_size)
+// 	{
+// 		// 블록을 분할해서 크기를 맞춤
+// 		while (block->size > log2(new_size))
+// 		{
+// 			bm_header_ptr buddy = split_block(block);
+// 			buddy->used = 0;
+// 		}
+// 		return p;
+// 	}
+// 	else
+// 	{
+// 		// 새로운 블록을 할당하고 데이터를 복사한 후 이전 블록 해제
+// 		void *new_block = bmalloc(s);
+// 		if (new_block == NULL)
+// 		{
+// 			return NULL;
+// 		}
+// 		memcpy(new_block, p, old_size);
+// 		bfree(p);
+// 		return new_block;
+// 	}
+// }
 /*
 	bestfit, firstfit 사이의 관리 방식을 설정해준다.
 */
@@ -216,4 +258,13 @@ void bmprint()
 	printf("=================================================\n");
 
 	// TODO: print out the stat's.
+}
+
+int main()
+{
+	printf("TEST\n");
+	void *p1, *p2, *p3;
+	p1 = bmalloc(2000);
+	p2 = bmalloc(2500);
+	p3 = bmalloc(1000);
 }
